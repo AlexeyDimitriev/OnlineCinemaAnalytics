@@ -2,45 +2,49 @@ package main
 
 import (
 	"context"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
-	
-	"online-cinema-analytics/internal/infrastructure/schema"
+
+	"online-cinema-analytics/internal/application/event_service"
+	"online-cinema-analytics/internal/infrastructure/config"
+	"online-cinema-analytics/internal/infrastructure/generator"
+	"online-cinema-analytics/internal/infrastructure/http"
+	"online-cinema-analytics/internal/infrastructure/http/handler"
+	"online-cinema-analytics/internal/infrastructure/kafka"
+	"online-cinema-analytics/internal/infrastructure/logger"
 )
 
 func main() {
-	cfg := schema.Config{
-		SchemaRegistryURL: getEnv("SCHEMA_REGISTRY_URL", "http://localhost:8081"),
-		KafkaBrokers: []string{getEnv("KAFKA_BROKER", "localhost:9092")},
-		TopicName: schema.TopicName,
-		Partitions: 3,
-		ReplicationFactor: 1,
-	}
+	lgr := logger.NewLogger()
+	cfg := config.Load()
 
-	log.Println("Initializing infrastructure...")
-	
-	if err := schema.Initialize(cfg); err != nil {
-		log.Fatalf("Failed to initialize infrastructure: %v", err)
+	prod, err := kafka.NewProducer(cfg.KafkaBrokers, cfg.KafkaTopic)
+	if err != nil {
+		lgr.Error("Error while creating producer", "Error", err)
 	}
-	
-	log.Println("Infrastructure initialized successfully")
+	defer prod.Close()
 
-	ctx, stop := signal.NotifyContext(
-		context.Background(), 
-		os.Interrupt,
-		syscall.SIGTERM,
-	)
+	evtSvc := eventservice.NewEventService(prod)
+	evtHandler := handler.NewEventHandler(evtSvc)
+
+	go func() {
+		lgr.Info("HTTP server starting...", "Address", cfg.HTTPAddr)
+		if err := http.Run(cfg.HTTPAddr, evtHandler); err != nil {
+			lgr.Error("HTTP server failed.", "Error", err)
+		}
+		lgr.Info("HTTP server started.")
+	}()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	
-	<-ctx.Done()
-	log.Println("Shutting down...")
-}
 
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
+	if cfg.GeneratorEnabled {
+		gen := generator.NewEngine(evtSvc, cfg.GeneratorUsers, cfg.GeneratorMovies, cfg.GeneratorInterval)
+		lgr.Info("Generator started.")
+		go gen.Run(ctx)
 	}
-	return defaultValue
+
+	<-ctx.Done()
+	lgr.Info("Shutting down...")
 }

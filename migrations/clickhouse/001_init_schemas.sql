@@ -1,9 +1,12 @@
+CREATE DATABASE IF NOT EXISTS movie_analytics;
+USE movie_analytics;
+
 CREATE TABLE IF NOT EXISTS movie_events_kafka (
     event_id String,
     user_id String,
     movie_id String,
     event_type String,
-    timestamp DateTime64(3, 'UTC'),
+    timestamp String,
     device_type String,
     session_id String,
     progress_seconds Int32
@@ -41,10 +44,7 @@ CREATE TABLE IF NOT EXISTS movie_events (
     INDEX idx_user_id user_id TYPE bloom_filter GRANULARITY 4
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMMDD(timestamp)
-ORDER BY (user_id, toStartOfDay(timestamp), timestamp)
-SETTINGS
-    index_granularity = 8192,
-    allow_nullable_key = 1;
+ORDER BY (user_id, toStartOfDay(timestamp), timestamp);
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS movie_events_mv
 TO movie_events
@@ -53,10 +53,8 @@ AS SELECT
     user_id,
     movie_id,
     event_type,
-    timestamp,
+    parseDateTimeBestEffort(timestamp) AS timestamp,
     device_type,
     session_id,
     progress_seconds
 FROM movie_events_kafka;
-
-SYSTEM SYNC REPLICA movie_events;
